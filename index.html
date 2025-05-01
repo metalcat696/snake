@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>8-bit Snake</title>
+    <script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            touch-action: manipulation;
+            font-family: 'Press Start 2P', cursive;
+        }
+
+        body {
+            background: #2b2b2b;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #fff;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 600px;
+            padding: 15px;
+        }
+
+        #game-canvas {
+            width: 100%;
+            height: 70vh;
+            background: #000;
+            border: 4px solid #535353;
+            image-rendering: pixelated;
+        }
+
+        .panel {
+            margin: 15px 0;
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #00ff00;
+            text-shadow: 2px 2px #000;
+        }
+
+        .vk-button {
+            background: #4a752c;
+            color: #fff;
+            border: 3px solid #2d4720;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 12px;
+            margin: 8px;
+            cursor: pointer;
+            transition: all 0.1s;
+        }
+
+        .vk-button:active {
+            transform: translateY(2px);
+            background: #3a5d22;
+        }
+
+        .modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #000;
+            border: 3px solid #fff;
+            color: #fff;
+            padding: 20px;
+            max-width: 90%;
+            text-align: center;
+            z-index: 1000;
+        }
+
+        .leaderboard-list {
+            list-style: none;
+            margin: 15px 0;
+            max-height: 50vh;
+            overflow-y: auto;
+        }
+
+        .leaderboard-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            padding: 5px;
+            background: #1a1a1a;
+        }
+
+        @media (max-width: 480px) {
+            #game-canvas {
+                height: 60vh;
+            }
+            
+            .vk-button {
+                padding: 8px 16px;
+                font-size: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="panel">
+            <div>SCORE: <span id="score">0</span></div>
+            <div>HI-SCORE: <span id="high-score">0</span></div>
+        </div>
+        
+        <canvas id="game-canvas"></canvas>
+        
+        <div style="text-align: center; margin-top: 15px;">
+            <button class="vk-button" id="restart-btn">NEW GAME</button>
+            <button class="vk-button" id="leaderboard-btn">LEADERBOARD</button>
+            <button class="vk-button" id="share-btn">SHARE</button>
+        </div>
+    </div>
+
+    <div id="game-over-modal" class="modal" style="display: none;">
+        <h2 style="margin-bottom: 16px; color: #ff0000;">GAME OVER!</h2>
+        <p>FINAL SCORE: <span id="final-score">0</span></p>
+        <button class="vk-button" onclick="closeModal()">OK</button>
+    </div>
+
+    <div id="leaderboard-modal" class="modal" style="display: none;">
+        <h2>TOP PLAYERS</h2>
+        <ul class="leaderboard-list" id="leaderboard-list"></ul>
+        <button class="vk-button" onclick="closeModal()">CLOSE</button>
+    </div>
+
+    <script>
+        // Game Configuration
+        const GRID_SIZE = 20;
+        const CELL_SIZE = 20;
+        let gameLoop = null;
+        let score = 0;
+        let highScore = 0;
+        let userId = null;
+        let devicePlatform = 'unknown';
+        let isTablet = false;
+
+        // Game State
+        let snake = [];
+        let food = {};
+        let direction = 'right';
+        let nextDirection = 'right';
+
+        // DOM Elements
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // VK Initialization
+        async function initVK() {
+            try {
+                await vkBridge.send('VKWebAppInit');
+                
+                const deviceInfo = await vkBridge.send('VKWebAppGetDeviceInfo');
+                devicePlatform = deviceInfo.platform;
+                isTablet = deviceInfo.is_tablet;
+
+                await vkBridge.send('VKWebAppSetViewSettings', {
+                    status_bar_style: 'dark',
+                    action_bar_color: '#2b2b2b',
+                    navigation_bar_color: '#2b2b2b'
+                });
+
+                if (devicePlatform === 'ios') {
+                    document.body.style.webkitOverflowScrolling = 'touch';
+                }
+
+                const user = await vkBridge.send('VKWebAppGetUserInfo');
+                userId = user.id;
+
+                initGame();
+                adjustForDeviceType();
+                gameLoop = setInterval(gameStep, 200);
+
+            } catch (error) {
+                console.error('VK init error:', error);
+                showErrorModal();
+            }
+        }
+
+        function adjustForDeviceType() {
+            if (isTablet) {
+                document.querySelectorAll('.vk-button').forEach(btn => {
+                    btn.style.fontSize = '14px';
+                    btn.style.padding = '12px 24px';
+                });
+            }
+        }
+
+        // Game Logic
+        function initGame() {
+            canvas.width = GRID_SIZE * CELL_SIZE;
+            canvas.height = GRID_SIZE * CELL_SIZE;
+
+            snake = [
+                { x: 8, y: 8 },
+                { x: 7, y: 8 },
+                { x: 6, y: 8 }
+            ];
+            
+            generateFood();
+            score = 0;
+            updateScoreDisplay();
+            loadHighScore();
+            draw();
+        }
+
+        function generateFood() {
+            do {
+                food = {
+                    x: Math.floor(Math.random() * GRID_SIZE),
+                    y: Math.floor(Math.random() * GRID_SIZE)
+                };
+            } while (snake.some(seg => seg.x === food.x && seg.y === food.y));
+        }
+
+        function gameStep() {
+            const head = { ...snake[0] };
+            direction = nextDirection;
+
+            switch(direction) {
+                case 'up': head.y--; break;
+                case 'down': head.y++; break;
+                case 'left': head.x--; break;
+                case 'right': head.x++; break;
+            }
+
+            if(checkCollision(head)) {
+                endGame();
+                return;
+            }
+
+            snake.unshift(head);
+
+            if(head.x === food.x && head.y === food.y) {
+                score += 10;
+                updateScoreDisplay();
+                generateFood();
+            } else {
+                snake.pop();
+            }
+
+            draw();
+        }
+
+        function draw() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            snake.forEach((seg, index) => {
+                ctx.fillStyle = index === 0 ? '#4a752c' : '#2d4720';
+                ctx.fillRect(
+                    seg.x * CELL_SIZE,
+                    seg.y * CELL_SIZE,
+                    CELL_SIZE - 1,
+                    CELL_SIZE - 1
+                );
+            });
+
+            ctx.fillStyle = '#e64646';
+            ctx.beginPath();
+            ctx.arc(
+                food.x * CELL_SIZE + CELL_SIZE/2,
+                food.y * CELL_SIZE + CELL_SIZE/2,
+                CELL_SIZE/2 - 1,
+                0,
+                Math.PI * 2
+            );
+            ctx.fill();
+        }
+
+        function checkCollision(head) {
+            return head.x < 0 || head.x >= GRID_SIZE || 
+                   head.y < 0 || head.y >= GRID_SIZE ||
+                   snake.some((seg, index) => 
+                       index > 0 && seg.x === head.x && seg.y === head.y
+                   );
+        }
+
+        async function endGame() {
+            clearInterval(gameLoop);
+            
+            if(score > highScore) {
+                highScore = score;
+                await saveHighScore();
+                try {
+                    await vkBridge.send('VKWebAppCallAPIMethod', {
+                        method: 'apps.saveLeaderboardScore',
+                        params: { score: highScore, v: '5.131' }
+                    });
+                } catch (e) {
+                    console.error('Leaderboard save error:', e);
+                }
+            }
+            
+            document.getElementById('final-score').textContent = score;
+            document.getElementById('high-score').textContent = highScore;
+            showModal('game-over-modal');
+        }
+
+        // UI Functions
+        function updateScoreDisplay() {
+            document.getElementById('score').textContent = score;
+        }
+
+        function showModal(id) {
+            document.getElementById(id).style.display = 'block';
+        }
+
+        function closeModal() {
+            document.querySelectorAll('.modal').forEach(modal => {
+                modal.style.display = 'none';
+            });
+        }
+
+        // VK Features
+        async function loadLeaderboard() {
+            try {
+                const result = await vkBridge.send('VKWebAppCallAPIMethod', {
+                    method: 'apps.getLeaderboard',
+                    params: { type: 'global', global: 1, v: '5.131' }
+                });
+                
+                const list = document.getElementById('leaderboard-list');
+                list.innerHTML = result.response.items.map((item, index) => `
+                    <li class="leaderboard-item">
+                        <span>${index + 1}. User${item.user_id}</span>
+                        <span>${item.score}</span>
+                    </li>
+                `).join('');
+                
+                showModal('leaderboard-modal');
+            } catch (e) {
+                console.error('Leaderboard error:', e);
+                vkBridge.send('VKWebAppShowSnackbar', { text: 'Error loading leaderboard' });
+            }
+        }
+
+        async function shareGame() {
+            try {
+                const shareParams = {
+                    link: 'https://vk.com/app123456',
+                    title: '8-bit Snake'
+                };
+
+                if (devicePlatform === 'ios') {
+                    shareParams.text = 'Play this awesome 8-bit snake game!';
+                }
+
+                await vkBridge.send('VKWebAppShare', shareParams);
+            } catch (e) {
+                console.error('Share error:', e);
+            }
+        }
+
+        async function saveHighScore() {
+            try {
+                await vkBridge.send('VKWebAppStorageSet', {
+                    key: 'highScore',
+                    value: highScore.toString()
+                });
+            } catch (e) {
+                console.error('Save error:', e);
+            }
+        }
+
+        async function loadHighScore() {
+            try {
+                const data = await vkBridge.send('VKWebAppStorageGet', { keys: ['highScore'] });
+                if(data.keys[0]) {
+                    highScore = parseInt(data.keys[0].value);
+                    document.getElementById('high-score').textContent = highScore;
+                }
+            } catch (e) {
+                console.error('Load error:', e);
+            }
+        }
+
+        // Event Listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof vkBridge !== 'undefined') {
+                initVK();
+            } else {
+                showErrorModal();
+            }
+        });
+
+        document.getElementById('restart-btn').addEventListener('click', () => {
+            if(gameLoop) clearInterval(gameLoop);
+            direction = 'right';
+            nextDirection = 'right';
+            initGame();
+            gameLoop = setInterval(gameStep, 200);
+            closeModal();
+        });
+
+        document.getElementById('leaderboard-btn').addEventListener('click', loadLeaderboard);
+        document.getElementById('share-btn').addEventListener('click', shareGame);
+
+        // Touch Controls
+        let touchStartX = 0;
+        let touchStartY = 0;
+
+        canvas.addEventListener('touchstart', e => {
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        });
+
+        canvas.addEventListener('touchmove', e => {
+            if(!touchStartX) return;
+            
+            const touchEndX = e.touches[0].clientX;
+            const touchEndY = e.touches[0].clientY;
+            const dx = touchEndX - touchStartX;
+            const dy = touchEndY - touchStartY;
+
+            if(Math.abs(dx) > 30 || Math.abs(dy) > 30) {
+                if(Math.abs(dx) > Math.abs(dy)) {
+                    nextDirection = dx > 0 ? 'right' : 'left';
+                } else {
+                    nextDirection = dy > 0 ? 'down' : 'up';
+                }
+                touchStartX = null;
+            }
+        });
+
+        // Keyboard Controls
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case 'ArrowUp': if(direction !== 'down') nextDirection = 'up'; break;
+                case 'ArrowDown': if(direction !== 'up') nextDirection = 'down'; break;
+                case 'ArrowLeft': if(direction !== 'right') nextDirection = 'left'; break;
+                case 'ArrowRight': if(direction !== 'left') nextDirection = 'right'; break;
+            }
+        });
+
+        function showErrorModal() {
+            document.body.innerHTML = `
+                <div class="modal" style="display: block;">
+                    <h2>Please open in VK app</h2>
+                    <p>This game works only inside VK mobile app</p>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>
